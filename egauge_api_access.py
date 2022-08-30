@@ -2,31 +2,64 @@ import datetime as dt
 from pytz import timezone as tz
 import requests
 import pandas as pd
+from configparser import ConfigParser
 
 # Versions
+# 1.1 - add egauge number config file, small changes
 # 1.0 - first stable
 
-def fetch(device, interval, start, end, raw=False):
+"""Relatively simple package for pulling stored egauge data
+
+Usage:
+
+import egauge_api_access as api
+
+df = api.get_data(  site=           'bayfield_jail',
+                    interval=       'h',
+                    start=          '2022-08-19 00:00+01:00',
+                    end=            '2022-08-20 00:00+01:00',
+                    output_file=    True                        )  
+
+# or
+
+df = api.get_data(  device=         30304,
+                    interval=       'h',
+                    start=          '2022-08-19 00:00+01:00',
+                    end=            '2022-08-20 00:00+01:00',
+                    output_file=    True                        )  
+
+
+""" 
+
+def get_data(interval, start, end, device=None, site=None, raw=False, output_file=False):
     """Get data from egauge api for stored data
 
     Args:
-
-        device (int) :   egauge ID (see it's url)
         
         interval (str) : 'm' for minute, 'h' for hour (no seconds)
         
         start (str) :    datetime WITH timezone, ISO formatted (e.g. '2022-08-20 00:00-06:00')
         
         end (str) :      datetime WITH timezone, ISO formatted
-
-        raw (bin) :      (Optional) True = dump raw data, False (default) = don't
+        
+        device (int) :   (Optional) egauge ID (see it's url)
+        
+        site (str) :     (Optional) customer and site name to lookup egauge number
+        
+        raw (bool) :     (Optional) True = dump raw data, False (default) = don't
+        
+        output_file(bool):  (Optional) True = save df to csv, False (default) = don't                
 
     
     Returns:
     
         pandas.DataFrame full of your data
 
-   """      
+   """    
+   
+    if site:
+        device = lookup_egauge_number(site)
+        print(site, device)
 
     timezone = int(start[16:19])
     if   timezone < 0:
@@ -43,16 +76,20 @@ def fetch(device, interval, start, end, raw=False):
     next = start # just get in the loop
     while next <= end:                     
         next = min(start + dt.timedelta(days=28), end)
-        df_new = single_fetch(device, timezone, interval, start, next, raw)
+        df_new = single_api_call(device, timezone, interval, start, next, raw)
         df = pd.concat((df,df_new))
         start = next
         if next >= end: 
             break                  
     
+    if output_file:
+        dtnow = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        df.to_csv(f'egauge_{site}_{interval}_{dtnow}.csv')
+    
     return df
     
 
-def single_fetch(device, timezone, interval, start, end, raw=False):
+def single_api_call(device, timezone, interval, start, end, raw=False):
     """Single GET request to the egauge api for stored data given 
     a time period (max return rows about 40,000)
 
@@ -123,4 +160,25 @@ def single_fetch(device, timezone, interval, start, end, raw=False):
     df = df.dropna()
     df = df[['Load [kW]']]   
     
-    return df       
+    return df
+
+def lookup_egauge_number(site):
+    """Give a site name get an egauge ID from config.ini 
+
+    Args:
+
+        site (str)  :   customer and site separted by underscore (e.g. bayfield_courthouse)
+    
+    Returns:
+    
+        egauge ID as int
+
+   """    
+    config = ConfigParser()
+    config.read('egauge_IDs.ini')    
+    
+    if site in config['DEFAULT']:
+        return int(config['DEFAULT'][site])
+    else:
+        print('error: site not found in .ini file')
+        quit()
