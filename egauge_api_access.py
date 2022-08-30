@@ -5,6 +5,7 @@ import pandas as pd
 from configparser import ConfigParser
 
 # Versions
+# 1.2 - output file name
 # 1.1 - add egauge number config file, small changes
 # 1.0 - first stable
 
@@ -84,7 +85,10 @@ def get_data(interval, start, end, device=None, site=None, raw=False, output_fil
     
     if output_file:
         dtnow = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        df.to_csv(f'egauge_{site}_{interval}_{dtnow}.csv')
+        if site:
+            df.to_csv(f'egauge_{site}_{interval}_{dtnow}.csv')
+        elif device:
+            df.to_csv(f'egauge_{device}_{interval}_{dtnow}.csv')
     
     return df
     
