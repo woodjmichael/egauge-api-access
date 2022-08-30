@@ -5,43 +5,52 @@ import pandas as pd
 from configparser import ConfigParser
 
 # Versions
+# 1.3 - custom column name (for bad river wwtp)
 # 1.2 - output file name
 # 1.1 - add egauge number config file, small changes
 # 1.0 - first stable
 
-"""Relatively simple package for pulling stored egauge data
+"""Relatively simple package for pulling stored egauge data (py v3.9)
 
 Usage:
 
-import egauge_api_access as api
+    import egauge_api_access as api
 
-df = api.get_data(  site=           'bayfield_jail',
-                    interval=       'h',
-                    start=          '2022-08-19 00:00+01:00',
-                    end=            '2022-08-20 00:00+01:00',
-                    output_file=    True                        )  
+    df = api.get_data(  site=           'badriver_clinic',
+                        interval=       'h',
+                        start=          '2022-08-19 00:00+01:00', # egauge timezone
+                        end=            '2022-08-20 00:00+01:00', # exclusive
+                        feature=        'Load', # or 'Solar'
+                        output_file=    True                        ) 
 
-# or
+    # or
 
-df = api.get_data(  device=         30304,
-                    interval=       'h',
-                    start=          '2022-08-19 00:00+01:00',
-                    end=            '2022-08-20 00:00+01:00',
-                    output_file=    True                        )  
+    df = api.get_data(  device=         53489,
+                        interval=       'h',
+                        start=          '2022-08-19 00:00+01:00', # egauge timezone
+                        end=            '2022-08-20 00:00+01:00', # exclusive
+                        feature=        'Load', # or 'Solar'
+                        output_file=    True                        ) 
+
+    print(df) # beginning of period convention  
 
 
 """ 
 
-def get_data(interval, start, end, device=None, site=None, raw=False, output_file=False):
+def get_data(interval, start, end, feature='Load', device=None, site=None, raw=False, output_file=False):
     """Get data from egauge api for stored data
 
     Args:
         
         interval (str) : 'm' for minute, 'h' for hour (no seconds)
         
-        start (str) :    datetime WITH timezone, ISO formatted (e.g. '2022-08-20 00:00-06:00')
+        start (str) :    datetime w/ egauge timezone, ISO formatted (e.g. '2022-08-20 00:00-06:00')
         
-        end (str) :      datetime WITH timezone, ISO formatted
+        end (str) :      datetime w/ egauge timezone, ISO formatted
+        
+        feature(str):   (Optional)  'Load' (default) gets you Usage_[kWh] as Load kW
+                                    'Solar' gets Generation_[kWh] as Solar kW
+                                    Or any other valid column, as itself
         
         device (int) :   (Optional) egauge ID (see it's url)
         
@@ -49,7 +58,8 @@ def get_data(interval, start, end, device=None, site=None, raw=False, output_fil
         
         raw (bool) :     (Optional) True = dump raw data, False (default) = don't
         
-        output_file(bool):  (Optional) True = save df to csv, False (default) = don't                
+        output_file(bool):  (Optional) True = save df to csv, False (default) = don't
+
 
     
     Returns:
@@ -60,7 +70,8 @@ def get_data(interval, start, end, device=None, site=None, raw=False, output_fil
    
     if site:
         device = lookup_egauge_number(site)
-        print(site, device)
+        print('')
+        print(site, device, feature)
 
     timezone = int(start[16:19])
     if   timezone < 0:
@@ -77,7 +88,7 @@ def get_data(interval, start, end, device=None, site=None, raw=False, output_fil
     next = start # just get in the loop
     while next <= end:                     
         next = min(start + dt.timedelta(days=28), end)
-        df_new = single_api_call(device, timezone, interval, start, next, raw)
+        df_new = single_api_call(device, timezone, interval, start, next, raw, feature)
         df = pd.concat((df,df_new))
         start = next
         if next >= end: 
@@ -93,7 +104,7 @@ def get_data(interval, start, end, device=None, site=None, raw=False, output_fil
     return df
     
 
-def single_api_call(device, timezone, interval, start, end, raw=False):
+def single_api_call(device, timezone, interval, start, end, raw, feature):
     """Single GET request to the egauge api for stored data given 
     a time period (max return rows about 40,000)
 
@@ -110,6 +121,10 @@ def single_api_call(device, timezone, interval, start, end, raw=False):
         end (dt obj) :   datetime WITH timezone, ISO formatted
 
         raw (bin) :      (Optional) True = dump raw data, False (default) = don't
+        
+        feature(str):   (Optional)  'Load' (default) gets you Usage_[kWh] as Load kW
+                                    'Solar' gets Generation_[kWh] as Solar kW
+                                    Or any other valid column, as itself
 
     
     Returns:
@@ -117,6 +132,15 @@ def single_api_call(device, timezone, interval, start, end, raw=False):
         pandas.DataFrame full of your data
 
    """
+   
+    # what columns to get
+    if feature == 'Load':
+        col_name = 'Usage_[kWh]'
+    elif feature == 'Solar':     
+        col_name = 'Generation_[kWh]'
+    else:
+        print(f'\nCustom column selected: {feature}')
+        col_name = feature
     
     # useful
     if   interval == 'm': interval_s = 60
@@ -129,7 +153,7 @@ def single_api_call(device, timezone, interval, start, end, raw=False):
     n = int(delta / interval_s) # how many accumulator samples at given interval
     f = start_unix + interval_s * n        
     if n > 45000: 
-        print(f'Single quests larger than 40000 rows often fail (n={n})')
+        print(f'Single api calls larger than 40000 rows often fail (n={n})')
     
     # info
     print('Get: ','Start',start,'- End',end,'(n =',n,')')
@@ -143,28 +167,38 @@ def single_api_call(device, timezone, interval, start, end, raw=False):
         url = url + f'&{key}={value}'       
 
     # request data
-    data = requests.get(url).text
+    response = requests.get(url) 
+    if response:
+        data = response.text
+    else:
+        print(f'\nHTTP error code: {response.status_code} ')
+        quit()
 
-    # buld df
+    # build df
     df = pd.DataFrame([x.split(',') for x in data.split('\r\n')[1:-1]], 
                     columns=[x.strip(' ').replace('"','').replace(' ','_') for x in data.split('\r\n')[0].split(',')])
     df = df.rename(columns={'Date_&_Time':'Unix time'})
 
-    if raw: df.to_csv(f'egauge_raw_{device}_{interval}_{start_unix}_{end_unix}.csv')
+    if raw:
+        df.to_csv(f'egauge_raw_{device}_{interval}_{start_unix}_{end_unix}.csv')
     
     # fix timezone    
     df['Datetime'] = pd.to_datetime(df['Unix time'],unit='s')
     df = df.set_index('Datetime')
     df = df.tz_localize('UTC').tz_convert(timezone)   
     
-    # get to kw
+    # unaccumulate
     df = df.apply(pd.to_numeric)
-    df = df.sort_index()
-    df['Load [kW]'] = df['Usage_[kWh]'].diff(-1) * 3600/interval_s * -1 # .diff(-1) * -1 for beginning of period convention
-    df = df.dropna()
-    df = df[['Load [kW]']]   
+    df = df.sort_index()        
+    if feature=='Load' or feature =='Solar':
+        # convert to average (not kWH, Vh, Ah, etc)
+        feature = feature + ' kW'
+        df[feature] = df[col_name].diff(-1) * 3600/interval_s * -1 # .diff(-1) * -1 for beginning of period convention
+    else:
+        df[feature] = df[col_name].diff(-1) * -1 # .diff(-1) * -1 for beginning of period convention        
+    df = df.dropna()   
     
-    return df
+    return df[[feature]]
 
 def lookup_egauge_number(site):
     """Give a site name get an egauge ID from config.ini 
